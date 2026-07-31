@@ -128,7 +128,7 @@ function generateRandomString(length) {
 
     var logPanel = document.createElement('div');
     logPanel.id = 'bingLogPanel';
-    logPanel.innerHTML = '<div id="bingLogHeader">日志 (0) <span id="bingLogToggle">▼</span></div><div id="bingLogContent"></div>';
+    logPanel.innerHTML = '<div id="bingLogHeader"><span id="bingLogTitle">日志 (0)</span> <span id="bingLogToggle">▶</span></div><div id="bingLogContent" style="display:none"></div>';
     document.body.appendChild(logPanel);
 
     GM_addStyle(`
@@ -339,11 +339,16 @@ function log(message) {
     var content = document.getElementById('bingLogContent');
     var title = document.getElementById('bingLogTitle');
     if (!content) return;
+    var text = typeof message === 'string' ? message : String(message);
+    var lastEntry = content.lastChild;
+    if (lastEntry) {
+        var lastText = lastEntry.textContent.replace(/^\[[\d:]+\]\s*/, '');
+        if (lastText === text) return;
+    }
     var entry = document.createElement('div');
     entry.className = 'bingLogEntry';
     var now = new Date();
     var time = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-    var text = typeof message === 'string' ? message : String(message);
     entry.innerHTML = '<span class="bingLogTime">[' + time + ']</span> ' + text;
     content.appendChild(entry);
     content.scrollTop = content.scrollHeight;
@@ -362,7 +367,16 @@ function log(message) {
 }
 
 function onError(error) {
-    var msg = typeof error === 'string' ? error : (error && error.message ? error.message : String(error));
+    var msg;
+    if (typeof error === 'string') {
+        msg = error;
+    } else if (error instanceof Error) {
+        msg = (error.stack || error.toString());
+    } else if (error && error.message) {
+        msg = error.message;
+    } else {
+        msg = String(error);
+    }
     log(msg);
     var content = document.getElementById('bingLogContent');
     if (content && content.lastChild) content.lastChild.classList.add('error');
