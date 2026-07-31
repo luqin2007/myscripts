@@ -372,21 +372,25 @@ function log(message) {
     GM_setValue('logEntries', entries);
 }
 
-function onError(error) {
-    var msg;
-    if (typeof error === 'string') {
-        msg = error;
-    } else if (error instanceof Error) {
-        msg = (error.stack || error.toString());
-    } else if (error && error.message) {
-        msg = error.message;
-    } else {
-        msg = String(error);
+function onError() {
+    var msg = '';
+    for (var i = 0; i < arguments.length; i++) {
+        var arg = arguments[i];
+        if (typeof arg === 'string') {
+            msg += arg;
+        } else if (arg instanceof Error) {
+            msg += (arg.stack || arg.toString());
+        } else if (arg && typeof arg === 'object' && arg.message) {
+            msg += arg.message;
+        } else {
+            msg += String(arg);
+        }
+        if (i < arguments.length - 1) msg += ' ';
     }
     log(msg);
     var content = document.getElementById('bingLogContent');
     if (content && content.lastChild) content.lastChild.classList.add('error');
-    console.error(error);
+    console.error.apply(console, arguments);
 }
 
 // ================== 初始化 ==================
