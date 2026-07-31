@@ -61,24 +61,30 @@ function checkAndResetDaily() {
 
 // ================== 获取热门搜索词 ==================
 async function douyinhot_dic() {
-    //while (current_source_index < keywords_source.length) {
-        //const source = keywords_source[current_source_index];
-        //let url = appkey ? Hot_words_apis + source + "?format=json&appkey=" + appkey : Hot_words_apis + source;
-        let url = Hot_words_apis + max_rewards;
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('HTTP error! status: ' + response.status);
-            const data = await response.json();
-            if (data.data && data.data.some(item => item)) {
-                const words = data.data.map(item => item.title);
-                log(words);
-                return words;
-            }
-            onError('搜索词API返回数据为空');
-        } catch (error) {
-            onError('搜索词来源请求失败:', error);
+    let url = Hot_words_apis + max_rewards;
+    try {
+        var result = await new Promise(function(resolve, reject) {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: url,
+                onload: function(resp) {
+                    if (resp.status >= 200 && resp.status < 300) resolve(resp);
+                    else reject(new Error('HTTP error! status: ' + resp.status));
+                },
+                onerror: function(err) { reject(err || new Error('GM_xmlhttpRequest network error')); }
+            });
+        });
+        var data = JSON.parse(result.responseText);
+        if (data.data && data.data.some(item => item)) {
+            var words = data.data.map(item => item.title);
+            log(words);
+            return words;
         }
-        return default_search_words;
+        onError('搜索词API返回数据为空');
+    } catch (error) {
+        onError('搜索词来源请求失败:', error);
+    }
+    return default_search_words;
 }
 
 // ================== 菜单 ==================
