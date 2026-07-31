@@ -126,10 +126,15 @@ function generateRandomString(length) {
     floatDiv.innerText = '[0 / ' + max_rewards + ']';
     document.body.appendChild(floatDiv);
 
+    var logPanel = document.createElement('div');
+    logPanel.id = 'bingLogPanel';
+    logPanel.innerHTML = '<div id="bingLogHeader">日志 (0) <span id="bingLogToggle">▼</span></div><div id="bingLogContent"></div>';
+    document.body.appendChild(logPanel);
+
     GM_addStyle(`
         #bingSearchProgress {
             position: fixed;
-            top: 80px;   /* 下移 */
+            top: 80px;
             right: 20px;
             z-index: 9999;
             background: rgba(0,0,0,0.6);
@@ -141,6 +146,58 @@ function generateRandomString(length) {
             box-shadow: 0 0 12px rgba(0,0,0,0.5);
             pointer-events: none;
         }
+        #bingLogPanel {
+            position: fixed;
+            left: 20px;
+            bottom: 20px;
+            z-index: 9999;
+            background: rgba(0,0,0,0.75);
+            color: #fff;
+            font-size: 13px;
+            font-family: monospace;
+            border-radius: 10px;
+            box-shadow: 0 0 12px rgba(0,0,0,0.5);
+            min-width: 280px;
+            max-width: 90vw;
+        }
+        #bingLogHeader {
+            padding: 8px 12px;
+            cursor: move;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 10px 10px 0 0;
+            background: rgba(255,255,255,0.1);
+            font-weight: bold;
+            user-select: none;
+        }
+        #bingLogToggle {
+            cursor: pointer;
+            padding: 0 6px;
+        }
+        #bingLogContent {
+            padding: 8px 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: block;
+            border-radius: 0 0 10px 10px;
+        }
+        .bingLogEntry {
+            padding: 2px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            word-break: break-all;
+            line-height: 1.4;
+        }
+        .bingLogEntry:last-child {
+            border-bottom: none;
+        }
+        .bingLogEntry.error {
+            color: #ff6b6b;
+        }
+        .bingLogTime {
+            color: rgba(255,255,255,0.4);
+            margin-right: 6px;
+        }
     `);
 
     function updateProgress() {
@@ -150,6 +207,54 @@ function generateRandomString(length) {
 
     setInterval(updateProgress, 1000);
     window.updateBingSearchProgress = updateProgress;
+
+    document.getElementById('bingLogToggle').addEventListener('click', function(e) {
+        var content = document.getElementById('bingLogContent');
+        var toggle = document.getElementById('bingLogToggle');
+        var hidden = content.style.display === 'none';
+        content.style.display = hidden ? 'block' : 'none';
+        toggle.textContent = hidden ? '▼' : '▶';
+    });
+
+    (function initDrag() {
+        var panel = document.getElementById('bingLogPanel');
+        var header = document.getElementById('bingLogHeader');
+        var startX, startY, origLeft, origTop;
+        function onStart(e) {
+            if (e.target && e.target.id === 'bingLogToggle') return;
+            var touch = e.touches ? e.touches[0] : e;
+            startX = touch.clientX;
+            startY = touch.clientY;
+            var rect = panel.getBoundingClientRect();
+            origLeft = rect.left;
+            origTop = rect.top;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+            panel.style.left = origLeft + 'px';
+            panel.style.top = origTop + 'px';
+            e.preventDefault();
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onEnd);
+            document.addEventListener('touchmove', onMove, { passive: false });
+            document.addEventListener('touchend', onEnd);
+        }
+        function onMove(e) {
+            var touch = e.touches ? e.touches[0] : e;
+            var dx = touch.clientX - startX;
+            var dy = touch.clientY - startY;
+            panel.style.left = (origLeft + dx) + 'px';
+            panel.style.top = (origTop + dy) + 'px';
+            if (e.cancelable) e.preventDefault();
+        }
+        function onEnd() {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onEnd);
+            document.removeEventListener('touchmove', onMove);
+            document.removeEventListener('touchend', onEnd);
+        }
+        header.addEventListener('mousedown', onStart);
+        header.addEventListener('touchstart', onStart, { passive: false });
+    })();
 })();
 
 // ================== 主执行 ==================
@@ -207,11 +312,33 @@ function exec() {
     }
 }
 
+var maxLogEntries = 50;
+
+function pad(n) {
+    return n < 10 ? '0' + n : n;
+}
+
 function log(message) {
     console.log(message);
+    var content = document.getElementById('bingLogContent');
+    var title = document.getElementById('bingLogTitle');
+    if (!content) return;
+    var entry = document.createElement('div');
+    entry.className = 'bingLogEntry';
+    var now = new Date();
+    var time = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    entry.innerHTML = '<span class="bingLogTime">[' + time + ']</span> ' + message;
+    content.appendChild(entry);
+    content.scrollTop = content.scrollHeight;
+    if (title) title.textContent = '日志 (' + content.children.length + ')';
+    while (content.children.length > maxLogEntries) content.removeChild(content.firstChild);
 }
 
 function onError(error) {
+    var msg = typeof error === 'string' ? error : (error && error.message ? error.message : String(error));
+    log(msg);
+    var content = document.getElementById('bingLogContent');
+    if (content && content.lastChild) content.lastChild.classList.add('error');
     console.error(error);
 }
 
