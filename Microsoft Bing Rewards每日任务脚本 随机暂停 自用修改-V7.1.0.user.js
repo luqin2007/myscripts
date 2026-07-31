@@ -69,18 +69,16 @@ async function douyinhot_dic() {
             const response = await fetch(url);
             if (!response.ok) throw new Error('HTTP error! status: ' + response.status);
             const data = await response.json();
-            if (data.data.some(item => item)) {
+            if (data.data && data.data.some(item => item)) {
                 const words = data.data.map(item => item.title);
                 log(words);
                 return words;
             }
+            onError('搜索词API返回数据为空');
         } catch (error) {
             onError('搜索词来源请求失败:', error);
         }
-        //current_source_index++;
-    //}
-    onError('所有搜索词来源请求失败');
-    return default_search_words;
+        return default_search_words;
 }
 
 // ================== 菜单 ==================
