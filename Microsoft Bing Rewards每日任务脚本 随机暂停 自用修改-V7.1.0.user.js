@@ -208,6 +208,22 @@ function generateRandomString(length) {
     setInterval(updateProgress, 1000);
     window.updateBingSearchProgress = updateProgress;
 
+    function restoreLogs() {
+        var content = document.getElementById('bingLogContent');
+        var title = document.getElementById('bingLogTitle');
+        if (!content) return;
+        var entries = GM_getValue('logEntries', []);
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var entry = document.createElement('div');
+            entry.className = 'bingLogEntry' + (e.isError ? ' error' : '');
+            entry.innerHTML = '<span class="bingLogTime">[' + e.time + ']</span> ' + e.text;
+            content.appendChild(entry);
+        }
+        if (title) title.textContent = '日志 (' + content.children.length + ')';
+    }
+    restoreLogs();
+
     document.getElementById('bingLogToggle').addEventListener('click', function(e) {
         var content = document.getElementById('bingLogContent');
         var toggle = document.getElementById('bingLogToggle');
@@ -327,11 +343,22 @@ function log(message) {
     entry.className = 'bingLogEntry';
     var now = new Date();
     var time = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-    entry.innerHTML = '<span class="bingLogTime">[' + time + ']</span> ' + message;
+    var text = typeof message === 'string' ? message : String(message);
+    entry.innerHTML = '<span class="bingLogTime">[' + time + ']</span> ' + text;
     content.appendChild(entry);
     content.scrollTop = content.scrollHeight;
     if (title) title.textContent = '日志 (' + content.children.length + ')';
     while (content.children.length > maxLogEntries) content.removeChild(content.firstChild);
+    var entries = [];
+    for (var i = 0; i < content.children.length; i++) {
+        var child = content.children[i];
+        entries.push({
+            time: child.querySelector('.bingLogTime') ? child.querySelector('.bingLogTime').textContent.replace(/[\[\]]/g, '') : '',
+            text: child.textContent.replace(/^\[[\d:]+\]\s*/, ''),
+            isError: child.classList.contains('error')
+        });
+    }
+    GM_setValue('logEntries', entries);
 }
 
 function onError(error) {
