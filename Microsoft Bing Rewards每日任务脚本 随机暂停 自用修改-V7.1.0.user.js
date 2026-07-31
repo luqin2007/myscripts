@@ -69,7 +69,11 @@ async function douyinhot_dic() {
             const response = await fetch(url);
             if (!response.ok) throw new Error('HTTP error! status: ' + response.status);
             const data = await response.json();
-            if (data.data.some(item => item)) return data.data.map(item => item.title);
+            if (data.data.some(item => item)) {
+                const words = data.data.map(item => item.title);
+                log(words);
+                return words;
+            }
         } catch (error) {
             onError('搜索词来源请求失败:', error);
         }
@@ -300,10 +304,12 @@ function exec() {
             if (GM_getValue('stopped', false)) return;
             let nowtxt = search_words[currentSearchCount - 1];
             nowtxt = AutoStrTrans(nowtxt);
+            log(`keys[${currentSearchCount - 1}]: ${nowtxt}`);
             let searchUrl = currentSearchCount < max_rewards / 2
                 ? `https://www.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`
                 : `https://cn.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`;
             if (currentSearchCount % 5 === 0) {
+                log(`pause_time: ${pause_time}`);
                 setTimeout(function () { if (!GM_getValue('stopped', false)) location.href = searchUrl; }, pause_time);
             } else {
                 location.href = searchUrl;
