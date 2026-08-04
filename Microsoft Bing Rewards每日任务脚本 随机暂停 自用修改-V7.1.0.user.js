@@ -25,25 +25,13 @@
 // @updateURL https://update.greasyfork.org/scripts/496117/Microsoft%20Bing%20Rewards%E6%AF%8F%E6%97%A5%E4%BB%BB%E5%8A%A1%E8%84%9A%E6%9C%AC%20%E9%9A%8F%E6%9C%BA%E6%9A%82%E5%81%9C%20%E8%87%AA%E7%94%A8%E4%BF%AE%E6%94%B9.meta.js
 // ==/UserScript==
 
-var max_rewards = Math.floor(Math.random() * (33 - 28 + 1)) + 28; // 随机每次搜索总次数
+var cached_words = GM_getValue('search_words_cache', null);
+var cached_max = GM_getValue('max_rewards_cache', 0);
+var max_rewards = cached_max || Math.floor(Math.random() * (33 - 28 + 1)) + 28; // 随机每次搜索总次数
 var pause_time = Math.floor(Math.random() * (900000 - 360000 + 1)) + 360000; // 随机暂停时间（6到15分钟）
-var search_words = []; // 搜索词
-// var appkey = ""; // APIKEY
+var search_words = cached_words || []; // 搜索词（跨页面持久化）
 var Hot_words_apis = "https://keywords.luqion.cn/api/keywords?count=";
-
-var default_search_words = [
-    //"盛年不重来，一日难再晨", "千里之行，始于足下", "少年易学老难成，一寸光阴不可轻", "敏而好学，不耻下问", "海内存知已，天涯若比邻",
-    //"三人行，必有我师焉", "莫愁前路无知已，天下谁人不识君", "人生贵相知，何用金与钱", "天生我材必有用", "海纳百川有容乃大；壁立千仞无欲则刚",
-    //"穷则独善其身，达则兼济天下", "读书破万卷，下笔如有神", "学而不思则罔，思而不学则殆", "一年之计在于春，一日之计在于晨",
-    //"莫等闲，白了少年头，空悲切", "少壮不努力，老大徒伤悲", "一寸光阴一寸金，寸金难买寸光阴", "近朱者赤，近墨者黑",
-    //"吾生也有涯，而知也无涯", "纸上得来终觉浅，绝知此事要躬行", "学无止境", "己所不欲，勿施于人", "天将降大任于斯人也",
-    //"鞠躬尽瘁，死而后已", "书到用时方恨少", "天下兴亡，匹夫有责", "人无远虑，必有近忧", "为中华之崛起而读书", "一日无书，百事荒废",
-    //"岂能尽如人意，但求无愧我心", "人生自古谁无死，留取丹心照汗青", "生于忧患，死于安乐", "言必信，行必果", "夫君子之行，静以修身，俭以养德",
-    //"老骥伏枥，志在千里", "一日不读书，胸臆无佳想", "王侯将相宁有种乎", "淡泊以明志。宁静而致远", "卧龙跃马终黄土"
-];
-
-//var keywords_source = ['BaiduHot', 'TouTiaoHot', 'DouYinHot', 'WeiBoHot'];
-//var current_source_index = 0;
+var scriptState = 'idle'; // 'idle' | 'running' | 'paused' | 'error'
 
 // ================== 每日重置 ==================
 function checkAndResetDaily() {
@@ -53,7 +41,10 @@ function checkAndResetDaily() {
         GM_setValue('Cnt', 0);
         GM_setValue('lastReset', today);
         GM_setValue('stopped', false);
-        max_rewards = Math.floor(Math.random() * (33 - 28 + 1)) + 5;
+        max_rewards = Math.floor(Math.random() * (33 - 28 + 1)) + 28;
+        GM_setValue('max_rewards_cache', max_rewards);
+        GM_setValue('search_words_cache', null); // 清空缓存，触发重新获取
+        search_words = [];
         return true;
     }
     return false;
@@ -77,14 +68,17 @@ async function douyinhot_dic() {
         var data = JSON.parse(result.responseText);
         if (data.data && data.data.some(item => item)) {
             var words = data.data.map(item => item.title);
+            GM_setValue('search_words_cache', words);
+            GM_setValue('max_rewards_cache', max_rewards);
             log(words);
             return words;
         }
         onError('搜索词API返回数据为空');
+        throw new Error('搜索词API返回数据为空');
     } catch (error) {
         onError('搜索词来源请求失败:', error);
+        throw error;
     }
-    return default_search_words;
 }
 
 // ================== 菜单 ==================
@@ -97,6 +91,7 @@ GM_registerMenuCommand('开始', function () {
 
 GM_registerMenuCommand('停止', function () {
     GM_setValue('stopped', true);
+    if (window.setScriptState) window.setScriptState('paused');
     log("已停止运行");
 }, 'o');
 
@@ -134,9 +129,28 @@ function generateRandomString(length) {
     floatDiv.innerText = '[0 / ' + max_rewards + ']';
     document.body.appendChild(floatDiv);
 
+    // 控制面板
+    const controlPanel = document.createElement('div');
+    controlPanel.id = 'bingControlPanel';
+    controlPanel.innerHTML = `
+        <div id="bingButtons">
+            <button id="bingBtnPrev" title="上一个">◀</button>
+            <button id="bingBtnPause" title="暂停">⏸</button>
+            <button id="bingBtnStart" title="开始">▶</button>
+            <button id="bingBtnNext" title="下一个">▶▶</button>
+            <button id="bingBtnReset" title="重置">↺</button>
+        </div>
+        <div id="bingKeywords">
+            <div id="bingKeywordPrev" class="bingKeyword"></div>
+            <div id="bingKeywordCurr" class="bingKeyword bingKeywordCurrent"></div>
+            <div id="bingKeywordNext" class="bingKeyword"></div>
+        </div>
+    `;
+    document.body.appendChild(controlPanel);
+
     var logPanel = document.createElement('div');
     logPanel.id = 'bingLogPanel';
-    logPanel.innerHTML = '<div id="bingLogHeader"><span id="bingLogTitle">日志 (0)</span> <span id="bingLogToggle">▶</span></div><div id="bingLogContent" style="display:none"></div>';
+    logPanel.innerHTML = '<div id="bingLogHeader"><span id="bingLogTitle">日志 (0)</span><span><span id="bingLogClear" title="清除日志">✕</span> <span id="bingLogToggle">▶</span></span></div><div id="bingLogContent" style="display:none"></div>';
     document.body.appendChild(logPanel);
 
     GM_addStyle(`
@@ -206,15 +220,145 @@ function generateRandomString(length) {
             color: rgba(255,255,255,0.4);
             margin-right: 6px;
         }
+        #bingControlPanel {
+            position: fixed;
+            top: 128px;
+            right: 20px;
+            z-index: 9999;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            border-radius: 10px;
+            padding: 10px 12px;
+            box-shadow: 0 0 12px rgba(0,0,0,0.5);
+            min-width: 180px;
+        }
+        #bingButtons {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 6px;
+            justify-content: center;
+        }
+        #bingButtons button {
+            width: 30px;
+            height: 26px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.25);
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border-radius: 4px;
+            line-height: 1;
+            padding: 0;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #bingButtons button:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .bingKeyword {
+            padding: 2px 0;
+            font-size: 12px;
+            word-break: break-all;
+            line-height: 1.5;
+        }
+        #bingKeywordPrev { color: #999; }
+        .bingKeywordCurrent { color: #fff; font-weight: bold; }
+        #bingKeywordNext { color: #4caf50; }
+        #bingLogClear {
+            cursor: pointer;
+            margin-left: 8px;
+            color: rgba(255,255,255,0.5);
+            font-size: 14px;
+        }
+        #bingLogClear:hover {
+            color: #ff6b6b;
+        }
     `);
 
     function updateProgress() {
         const currentSearchCount = GM_getValue('Cnt', 0);
+        const floatDiv = document.getElementById('bingSearchProgress');
+        if (!floatDiv) return;
         floatDiv.innerText = `[${currentSearchCount} / ${max_rewards}]`;
+        const colors = {
+            idle: '#fff',
+            running: '#4caf50',
+            paused: '#ffeb3b',
+            error: '#f44336'
+        };
+        floatDiv.style.color = colors[scriptState] || '#fff';
     }
 
-    setInterval(updateProgress, 1000);
+    function updateKeywordDisplay() {
+        const cnt = GM_getValue('Cnt', 0);
+        const prevEl = document.getElementById('bingKeywordPrev');
+        const currEl = document.getElementById('bingKeywordCurr');
+        const nextEl = document.getElementById('bingKeywordNext');
+        if (prevEl) prevEl.textContent = cnt > 1 ? '上一条: ' + (search_words[cnt - 2] || '(无)') : '';
+        if (currEl) currEl.textContent = cnt > 0 ? '当前: ' + (search_words[cnt - 1] || '(无)') : '';
+        if (nextEl) nextEl.textContent = cnt < max_rewards ? '下一条: ' + (search_words[cnt] || '(无)') : '';
+    }
+
+    function setScriptState(state) {
+        scriptState = state;
+        updateProgress();
+    }
+
+    setInterval(function() {
+        updateProgress();
+        updateKeywordDisplay();
+    }, 1000);
     window.updateBingSearchProgress = updateProgress;
+    window.updateKeywordDisplay = updateKeywordDisplay;
+    window.setScriptState = setScriptState;
+
+    // 按钮事件
+    document.getElementById('bingBtnPause').addEventListener('click', function() {
+        GM_setValue('stopped', true);
+        setScriptState('paused');
+        log('⏸ 已暂停');
+    });
+
+    document.getElementById('bingBtnStart').addEventListener('click', function() {
+        GM_setValue('stopped', false);
+        setScriptState(GM_getValue('Cnt', 0) < max_rewards ? 'running' : 'idle');
+        log('▶ 已开始');
+        exec();
+    });
+
+    document.getElementById('bingBtnPrev').addEventListener('click', function() {
+        const cnt = GM_getValue('Cnt', 0);
+        if (cnt > 1) {
+            GM_setValue('Cnt', cnt - 2);
+            updateProgress();
+            updateKeywordDisplay();
+            log('◀ 回到上一条');
+            location.href = 'https://www.bing.com/?br_msg=Please-Wait';
+        }
+    });
+
+    document.getElementById('bingBtnNext').addEventListener('click', function() {
+        const cnt = GM_getValue('Cnt', 0);
+        if (cnt < max_rewards) {
+            const nowtxt = search_words[cnt];
+            log('▶▶ 跳到下一条: ' + nowtxt);
+            const rs = generateRandomString(4);
+            const rc = generateRandomString(32);
+            const searchUrl = cnt < max_rewards / 2
+                ? `https://www.bing.com/search?q=${encodeURI(nowtxt)}&form=${rs}&cvid=${rc}`
+                : `https://cn.bing.com/search?q=${encodeURI(nowtxt)}&form=${rs}&cvid=${rc}`;
+            location.href = searchUrl;
+        }
+    });
+
+    document.getElementById('bingBtnReset').addEventListener('click', function() {
+        GM_setValue('Cnt', 0);
+        setScriptState('idle');
+        updateKeywordDisplay();
+        log('↺ 已重置');
+    });
 
     function restoreLogs() {
         var content = document.getElementById('bingLogContent');
@@ -240,12 +384,21 @@ function generateRandomString(length) {
         toggle.textContent = hidden ? '▼' : '▶';
     });
 
+    document.getElementById('bingLogClear').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var content = document.getElementById('bingLogContent');
+        var title = document.getElementById('bingLogTitle');
+        if (content) content.innerHTML = '';
+        if (title) title.textContent = '日志 (0)';
+        GM_setValue('logEntries', []);
+    });
+
     (function initDrag() {
         var panel = document.getElementById('bingLogPanel');
         var header = document.getElementById('bingLogHeader');
         var startX, startY, origLeft, origTop;
         function onStart(e) {
-            if (e.target && e.target.id === 'bingLogToggle') return;
+            if (e.target && (e.target.id === 'bingLogToggle' || e.target.id === 'bingLogClear')) return;
             var touch = e.touches ? e.touches[0] : e;
             startX = touch.clientX;
             startY = touch.clientY;
@@ -285,17 +438,35 @@ function generateRandomString(length) {
 function exec() {
     if (GM_getValue('stopped', false)) {
         log("检测到停止标志，脚本终止。");
+        setScriptState('paused');
         return;
+    }
+
+    if (GM_getValue('Cnt') == null) GM_setValue('Cnt', 0);
+    let currentSearchCount = GM_getValue('Cnt');
+
+    // 检测用户自行搜索：当前是搜索结果页但查询词不匹配
+    if (currentSearchCount > 0 && search_words.length > 0) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const queryParam = urlParams.get('q');
+        if (queryParam) {
+            const decodedQuery = decodeURIComponent(queryParam);
+            const expectedKeyword = search_words[currentSearchCount - 1];
+            if (decodedQuery !== expectedKeyword && decodedQuery !== AutoStrTrans(expectedKeyword)) {
+                log('检测到用户自行搜索: "' + decodedQuery + '"，暂停脚本');
+                GM_setValue('stopped', true);
+                setScriptState('paused');
+                return;
+            }
+        }
     }
 
     let randomDelay = Math.floor(Math.random() * 20000) + 10000;
     let randomString = generateRandomString(4);
     let randomCvid = generateRandomString(32);
 
-    if (GM_getValue('Cnt') == null) GM_setValue('Cnt', 0);
-    let currentSearchCount = GM_getValue('Cnt');
-
     if (currentSearchCount < max_rewards) {
+        setScriptState('running');
         // ✅ 修复计数器不同步：先递增
         currentSearchCount++;
         GM_setValue('Cnt', currentSearchCount);
@@ -319,6 +490,8 @@ function exec() {
                 location.href = searchUrl;
             }
         }, randomDelay);
+    } else {
+        setScriptState('idle');
     }
 
     // 次日零点自动重置
@@ -395,11 +568,20 @@ function onError() {
     var content = document.getElementById('bingLogContent');
     if (content && content.lastChild) content.lastChild.classList.add('error');
     console.error.apply(console, arguments);
+    if (window.setScriptState) window.setScriptState('error');
 }
 
 // ================== 初始化 ==================
-douyinhot_dic().then(names => {
-    search_words = names;
-    checkAndResetDaily();
-    exec();
-}).catch(onError);
+(function init() {
+    const needReset = checkAndResetDaily();
+    if (search_words.length > 0 && !needReset) {
+        // 已有缓存关键词且当天已初始化过，直接执行
+        exec();
+    } else {
+        // 需要重新获取关键词
+        douyinhot_dic().then(names => {
+            search_words = names;
+            exec();
+        }).catch(onError);
+    }
+})();
