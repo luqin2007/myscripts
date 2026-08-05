@@ -1,0 +1,7 @@
+every 20 ticks do
+   input chemical:mekanism:nuclear_waste from "核废料输入" bottom side
+   output chemical:mekanism:nuclear_waste to "太阳能中子活化器" south side
+
+   input chemical:mekanism:polonium from "太阳能中子活化器" bottom side
+   output chemical:mekanism:polonium to "钋输出" bottom side
+end

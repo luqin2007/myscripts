@@ -1,0 +1,16 @@
+every 1 ticks do 
+   input fe:: from "电容器" east side
+   output fe:: to "耕地"
+end
+
+every 20 ticks do 
+
+   input fluid:minecraft:water from ae
+   output fluid:minecraft:water to "耕地" top side
+
+   input fluid:industrialforegoing:ether_gas from ae
+   output fluid:industrialforegoing:ether_gas to "耕地" bottom side
+
+   input item:: from "耕地" west side
+   output to ae
+end

@@ -1,11 +1,8 @@
-/*
- * @Author: luqin2007 lq2007lq@hotmail.com
- * @Date: 2024-04-11 00:53:26
- * @LastEditors: luqin2007 lq2007lq@hotmail.com
- * @LastEditTime: 2024-07-30 15:34:09
- * @FilePath: \qidian_qiandao\调试临时文件.js
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
- */
+const bar = findView("android.widget.SeekBar", "class");
+for (var key in bar) {
+    log("属性名: " + key + " | 值: " + bar[key]);
+}
+
 /**
  * 在控制台输出某个视图及所有子视图
  * @param {UiObject} view 视图
@@ -116,7 +113,3 @@ function clickButton(view) {
     }
     return false;
 }
-
-// logRootView()
-
-clickButton(findView(''))

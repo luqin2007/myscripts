@@ -1,0 +1,29 @@
+every 1 ticks do 
+   input fe:: from "电容器" east side
+   output fe:: to "加压反应室" west side
+end
+
+every 20 ticks do
+
+   input alltheores:fluorite_dust from AE
+   output alltheores:fluorite_dust to "加压反应室" top side
+
+   input fluid:minecraft:water from AE
+   output fluid:minecraft:water to "加压反应室" top side
+
+   -- 钚
+
+   input chemical:mekanism:spent_nuclear_waste from "钚" south side
+   output chemical:mekanism:spent_nuclear_waste to "废料桶" top side
+
+   input mekanism:pellet_plutonium from "钚" bottom side
+   output mekanism:pellet_plutonium to AE
+
+   -- 钋
+
+   input chemical:mekanism:spent_nuclear_waste from "钋" north side
+   output chemical:mekanism:spent_nuclear_waste to "废料桶" top side
+
+   input mekanism:pellet_polonium from "钋" bottom side
+   output mekanism:pellet_polonium to AE
+end
