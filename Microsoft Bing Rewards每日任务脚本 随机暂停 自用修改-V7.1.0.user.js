@@ -25,13 +25,18 @@
 // @updateURL https://update.greasyfork.org/scripts/496117/Microsoft%20Bing%20Rewards%E6%AF%8F%E6%97%A5%E4%BB%BB%E5%8A%A1%E8%84%9A%E6%9C%AC%20%E9%9A%8F%E6%9C%BA%E6%9A%82%E5%81%9C%20%E8%87%AA%E7%94%A8%E4%BF%AE%E6%94%B9.meta.js
 // ==/UserScript==
 
-var cached_words = GM_getValue('search_words_cache', null);
 var cached_max = GM_getValue('max_rewards_cache', 0);
 var max_rewards = cached_max || Math.floor(Math.random() * (33 - 28 + 1)) + 28; // 随机每次搜索总次数
 var pause_time = Math.floor(Math.random() * (900000 - 360000 + 1)) + 360000; // 随机暂停时间（6到15分钟）
-var search_words = cached_words || []; // 搜索词（跨页面持久化）
 var Hot_words_apis = "https://keywords.luqion.cn/api/keywords?count=";
 var scriptState = 'idle'; // 'idle' | 'running' | 'paused' | 'error'
+var countdownTarget = null; // 下次搜索跳转的目标时间戳(ms)
+var runToken = 0; // 运行令牌：暂停/停止时递增，使旧的定时器失效，避免重复计数
+var pendingRefill = null; // 正在进行的搜索词补货请求
+
+const POOL_KEY = 'kw_pool'; // 关键字缓存池(本地存储)，脚本中断时避免浪费服务器已标记的关键字
+const REFILL_BATCH = 10; // 池快空时每次从服务器补货的数量
+const REFILL_THRESHOLD = 5; // 池中剩余少于该数量时后台补货
 
 // ================== 每日重置 ==================
 function checkAndResetDaily() {
@@ -43,42 +48,63 @@ function checkAndResetDaily() {
         GM_setValue('stopped', false);
         max_rewards = Math.floor(Math.random() * (33 - 28 + 1)) + 28;
         GM_setValue('max_rewards_cache', max_rewards);
-        GM_setValue('search_words_cache', null); // 清空缓存，触发重新获取
-        search_words = [];
         return true;
     }
     return false;
 }
 
 // ================== 获取热门搜索词 ==================
-async function douyinhot_dic() {
-    let url = Hot_words_apis + max_rewards;
-    try {
-        var result = await new Promise(function(resolve, reject) {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: url,
-                onload: function(resp) {
-                    if (resp.status >= 200 && resp.status < 300) resolve(resp);
-                    else reject(new Error('HTTP error! status: ' + resp.status));
-                },
-                onerror: function(err) { reject(err || new Error('GM_xmlhttpRequest network error')); }
-            });
+async function fetchKeywords(count) {
+    let url = Hot_words_apis + count;
+    var result = await new Promise(function(resolve, reject) {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            onload: function(resp) {
+                if (resp.status >= 200 && resp.status < 300) resolve(resp);
+                else reject(new Error('HTTP error! status: ' + resp.status));
+            },
+            onerror: function(err) { reject(err || new Error('GM_xmlhttpRequest network error')); }
         });
-        var data = JSON.parse(result.responseText);
-        if (data.data && data.data.some(item => item)) {
-            var words = data.data.map(item => item.title);
-            GM_setValue('search_words_cache', words);
-            GM_setValue('max_rewards_cache', max_rewards);
-            log(words);
-            return words;
-        }
-        onError('搜索词API返回数据为空');
-        throw new Error('搜索词API返回数据为空');
-    } catch (error) {
-        onError('搜索词来源请求失败:', error);
-        throw error;
+    });
+    var data = JSON.parse(result.responseText);
+    if (data.data && data.data.some(item => item)) {
+        GM_setValue('max_rewards_cache', max_rewards);
+        return data.data.map(item => item.title);
     }
+    throw new Error('搜索词API返回数据为空');
+}
+
+// ================== 关键字缓存池 ==================
+// 服务器每次下发都会标记关键字已使用，脚本又经常中断。
+// 所以每次搜索只从本地池取一个，池快空时才后台补货，池空时阻塞补一次，把浪费降到最低。
+async function getNextKeyword() {
+    let pool = GM_getValue(POOL_KEY, []);
+    if (pool.length === 0) {
+        await refillKeywords(); // 池空：等待补货完成（失败会抛出）
+        pool = GM_getValue(POOL_KEY, []);
+        if (pool.length === 0) throw new Error('搜索词池为空：补货失败');
+    }
+    const kw = pool.shift();
+    GM_setValue(POOL_KEY, pool);
+    if (pool.length < REFILL_THRESHOLD) {
+        refillKeywords().catch(function() {}); // 后台补货，失败静默（下次池空时再补）
+    }
+    return kw;
+}
+
+function refillKeywords() {
+    if (pendingRefill) return pendingRefill;
+    pendingRefill = fetchKeywords(REFILL_BATCH)
+        .then(function(words) {
+            if (words && words.length > 0) {
+                var pool = GM_getValue(POOL_KEY, []);
+                GM_setValue(POOL_KEY, pool.concat(words));
+                log('补货 ' + words.length + ' 个搜索词，池内共 ' + (pool.length + words.length) + ' 个');
+            }
+        })
+        .finally(function() { pendingRefill = null; });
+    return pendingRefill;
 }
 
 // ================== 菜单 ==================
@@ -90,30 +116,16 @@ GM_registerMenuCommand('开始', function () {
 }, 'o');
 
 GM_registerMenuCommand('停止', function () {
-    GM_setValue('stopped', true);
-    if (window.setScriptState) window.setScriptState('paused');
-    log("已停止运行");
+    doPause();
 }, 'o');
 
 GM_registerMenuCommand('重置', function () {
     GM_setValue('Cnt', 0);
+    setScriptState('idle');
+    log('↺ 已重置');
 }, 'o');
 
 // ================== 工具函数 ==================
-function AutoStrTrans(st) {
-    let yStr = st, rStr = "", zStr = "", prePo = 0;
-    for (let i = 0; i < yStr.length;) {
-        let step = parseInt(Math.random() * 5) + 1;
-        if (i > 0) {
-            zStr = zStr + yStr.substr(prePo, i - prePo) + rStr;
-            prePo = i;
-        }
-        i = i + step;
-    }
-    if (prePo < yStr.length) zStr = zStr + yStr.substr(prePo, yStr.length - prePo);
-    return zStr;
-}
-
 function generateRandomString(length) {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let result = '';
@@ -126,27 +138,17 @@ function generateRandomString(length) {
     'use strict';
     const floatDiv = document.createElement('div');
     floatDiv.id = 'bingSearchProgress';
-    floatDiv.innerText = '[0 / ' + max_rewards + ']';
-    document.body.appendChild(floatDiv);
-
-    // 控制面板
-    const controlPanel = document.createElement('div');
-    controlPanel.id = 'bingControlPanel';
-    controlPanel.innerHTML = `
-        <div id="bingButtons">
-            <button id="bingBtnPrev" title="上一个">◀</button>
-            <button id="bingBtnPause" title="暂停">⏸</button>
-            <button id="bingBtnStart" title="开始">▶</button>
-            <button id="bingBtnNext" title="下一个">▶▶</button>
-            <button id="bingBtnReset" title="重置">↺</button>
+    floatDiv.innerHTML = `
+        <div class="bingProgressRow">
+            <span id="bingProgressText">[0 / ${max_rewards}]</span>
+            <span id="bingCountdown" class="bingCountdown"></span>
         </div>
-        <div id="bingKeywords">
-            <div id="bingKeywordPrev" class="bingKeyword"></div>
-            <div id="bingKeywordCurr" class="bingKeyword bingKeywordCurrent"></div>
-            <div id="bingKeywordNext" class="bingKeyword"></div>
+        <div id="bingButtons">
+            <button id="bingBtnToggle">▶ 开始</button>
+            <button id="bingBtnStop">⏹ 停止</button>
         </div>
     `;
-    document.body.appendChild(controlPanel);
+    document.body.appendChild(floatDiv);
 
     var logPanel = document.createElement('div');
     logPanel.id = 'bingLogPanel';
@@ -166,8 +168,42 @@ function generateRandomString(length) {
             padding: 12px 18px;
             border-radius: 10px;
             box-shadow: 0 0 12px rgba(0,0,0,0.5);
-            pointer-events: none;
+            text-align: center;
         }
+        .bingProgressRow {
+            display: flex;
+            align-items: baseline;
+            justify-content: center;
+            gap: 10px;
+        }
+        .bingCountdown {
+            font-size: 14px;
+            font-weight: normal;
+            white-space: nowrap;
+        }
+        .bingCountdown.warning { color: #ffeb3b; }
+        .bingCountdown.info { color: #4caf50; }
+        #bingButtons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        #bingButtons button {
+            padding: 4px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.25);
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border-radius: 4px;
+            line-height: 1;
+            transition: background 0.2s;
+        }
+        #bingButtons button:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        #bingBtnToggle.running { color: #ffeb3b; }
         #bingLogPanel {
             position: fixed;
             left: 20px;
@@ -220,52 +256,6 @@ function generateRandomString(length) {
             color: rgba(255,255,255,0.4);
             margin-right: 6px;
         }
-        #bingControlPanel {
-            position: fixed;
-            top: 128px;
-            right: 20px;
-            z-index: 9999;
-            background: rgba(0,0,0,0.6);
-            color: #fff;
-            border-radius: 10px;
-            padding: 10px 12px;
-            box-shadow: 0 0 12px rgba(0,0,0,0.5);
-            min-width: 180px;
-        }
-        #bingButtons {
-            display: flex;
-            gap: 4px;
-            margin-bottom: 6px;
-            justify-content: center;
-        }
-        #bingButtons button {
-            width: 30px;
-            height: 26px;
-            font-size: 13px;
-            cursor: pointer;
-            border: 1px solid rgba(255,255,255,0.25);
-            background: rgba(255,255,255,0.1);
-            color: #fff;
-            border-radius: 4px;
-            line-height: 1;
-            padding: 0;
-            transition: background 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #bingButtons button:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        .bingKeyword {
-            padding: 2px 0;
-            font-size: 12px;
-            word-break: break-all;
-            line-height: 1.5;
-        }
-        #bingKeywordPrev { color: #999; }
-        .bingKeywordCurrent { color: #fff; font-weight: bold; }
-        #bingKeywordNext { color: #4caf50; }
         #bingLogClear {
             cursor: pointer;
             margin-left: 8px;
@@ -279,85 +269,58 @@ function generateRandomString(length) {
 
     function updateProgress() {
         const currentSearchCount = GM_getValue('Cnt', 0);
-        const floatDiv = document.getElementById('bingSearchProgress');
-        if (!floatDiv) return;
-        floatDiv.innerText = `[${currentSearchCount} / ${max_rewards}]`;
+        const progressText = document.getElementById('bingProgressText');
+        if (!progressText) return;
+        progressText.textContent = `[${currentSearchCount} / ${max_rewards}]`;
         const colors = {
             idle: '#fff',
             running: '#4caf50',
             paused: '#ffeb3b',
             error: '#f44336'
         };
-        floatDiv.style.color = colors[scriptState] || '#fff';
+        progressText.style.color = colors[scriptState] || '#fff';
     }
 
-    function updateKeywordDisplay() {
-        const cnt = GM_getValue('Cnt', 0);
-        const prevEl = document.getElementById('bingKeywordPrev');
-        const currEl = document.getElementById('bingKeywordCurr');
-        const nextEl = document.getElementById('bingKeywordNext');
-        if (prevEl) prevEl.textContent = cnt > 1 ? '上一条: ' + (search_words[cnt - 2] || '(无)') : '';
-        if (currEl) currEl.textContent = cnt > 0 ? '当前: ' + (search_words[cnt - 1] || '(无)') : '';
-        if (nextEl) nextEl.textContent = cnt < max_rewards ? '下一条: ' + (search_words[cnt] || '(无)') : '';
-    }
-
-    function setScriptState(state) {
-        scriptState = state;
-        updateProgress();
+    function updateCountdown() {
+        const el = document.getElementById('bingCountdown');
+        if (!el) return;
+        if (!countdownTarget || scriptState !== 'running') {
+            el.textContent = '';
+            el.className = 'bingCountdown';
+            return;
+        }
+        const remaining = Math.max(0, countdownTarget - Date.now());
+        if (remaining <= 0) {
+            el.textContent = '...';
+            el.className = 'bingCountdown info';
+            return;
+        }
+        const sec = Math.ceil(remaining / 1000);
+        if (sec > 60) {
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            el.textContent = m + 'm' + s + 's';
+        } else {
+            el.textContent = sec + 's';
+        }
+        el.className = 'bingCountdown ' + (sec > 60 ? 'info' : 'warning');
     }
 
     setInterval(function() {
         updateProgress();
-        updateKeywordDisplay();
+        updateButtonLabels();
+        updateCountdown();
     }, 1000);
     window.updateBingSearchProgress = updateProgress;
-    window.updateKeywordDisplay = updateKeywordDisplay;
-    window.setScriptState = setScriptState;
 
     // 按钮事件
-    document.getElementById('bingBtnPause').addEventListener('click', function() {
-        GM_setValue('stopped', true);
-        setScriptState('paused');
-        log('⏸ 已暂停');
+    document.getElementById('bingBtnToggle').addEventListener('click', function() {
+        if (scriptState === 'running') doPause();
+        else doStart();
     });
 
-    document.getElementById('bingBtnStart').addEventListener('click', function() {
-        GM_setValue('stopped', false);
-        setScriptState(GM_getValue('Cnt', 0) < max_rewards ? 'running' : 'idle');
-        log('▶ 已开始');
-        exec();
-    });
-
-    document.getElementById('bingBtnPrev').addEventListener('click', function() {
-        const cnt = GM_getValue('Cnt', 0);
-        if (cnt > 1) {
-            GM_setValue('Cnt', cnt - 2);
-            updateProgress();
-            updateKeywordDisplay();
-            log('◀ 回到上一条');
-            location.href = 'https://www.bing.com/?br_msg=Please-Wait';
-        }
-    });
-
-    document.getElementById('bingBtnNext').addEventListener('click', function() {
-        const cnt = GM_getValue('Cnt', 0);
-        if (cnt < max_rewards) {
-            const nowtxt = search_words[cnt];
-            log('▶▶ 跳到下一条: ' + nowtxt);
-            const rs = generateRandomString(4);
-            const rc = generateRandomString(32);
-            const searchUrl = cnt < max_rewards / 2
-                ? `https://www.bing.com/search?q=${encodeURI(nowtxt)}&form=${rs}&cvid=${rc}`
-                : `https://cn.bing.com/search?q=${encodeURI(nowtxt)}&form=${rs}&cvid=${rc}`;
-            location.href = searchUrl;
-        }
-    });
-
-    document.getElementById('bingBtnReset').addEventListener('click', function() {
-        GM_setValue('Cnt', 0);
-        setScriptState('idle');
-        updateKeywordDisplay();
-        log('↺ 已重置');
+    document.getElementById('bingBtnStop').addEventListener('click', function() {
+        doStop();
     });
 
     function restoreLogs() {
@@ -434,81 +397,46 @@ function generateRandomString(length) {
     })();
 })();
 
-// ================== 主执行 ==================
-function exec() {
-    if (GM_getValue('stopped', false)) {
-        log("检测到停止标志，脚本终止。");
-        setScriptState('paused');
+// ================== 控制 ==================
+function setScriptState(state) {
+    scriptState = state;
+    if (window.updateBingSearchProgress) window.updateBingSearchProgress();
+    updateButtonLabels();
+}
+
+function updateButtonLabels() {
+    const toggleBtn = document.getElementById('bingBtnToggle');
+    if (!toggleBtn) return;
+    const running = scriptState === 'running';
+    toggleBtn.textContent = running ? '⏸ 暂停' : '▶ 开始';
+    toggleBtn.classList.toggle('running', running);
+}
+
+function doStart() {
+    GM_setValue('stopped', false);
+    if (GM_getValue('Cnt', 0) >= max_rewards) {
+        log('今日搜索已完成，点击 停止 重置后可重新开始');
+        setScriptState('idle');
         return;
     }
+    setScriptState('running');
+    log('▶ 已开始');
+    exec();
+}
 
-    if (GM_getValue('Cnt') == null) GM_setValue('Cnt', 0);
-    let currentSearchCount = GM_getValue('Cnt');
+function doPause() {
+    runToken++;
+    GM_setValue('stopped', true);
+    setScriptState('paused');
+    log('⏸ 已暂停');
+}
 
-    // 检测用户自行搜索：当前是搜索结果页但查询词不匹配
-    if (currentSearchCount > 0 && search_words.length > 0) {
-        const urlParams = new URLSearchParams(window.location.search);
-        const queryParam = urlParams.get('q');
-        if (queryParam) {
-            const decodedQuery = decodeURIComponent(queryParam);
-            const expectedKeyword = search_words[currentSearchCount - 1];
-            if (decodedQuery !== expectedKeyword && decodedQuery !== AutoStrTrans(expectedKeyword)) {
-                log('检测到用户自行搜索: "' + decodedQuery + '"，暂停脚本');
-                GM_setValue('stopped', true);
-                setScriptState('paused');
-                return;
-            }
-        }
-    }
-
-    let randomDelay = Math.floor(Math.random() * 20000) + 10000;
-    let randomString = generateRandomString(4);
-    let randomCvid = generateRandomString(32);
-
-    if (currentSearchCount < max_rewards) {
-        setScriptState('running');
-        // ✅ 修复计数器不同步：先递增
-        currentSearchCount++;
-        GM_setValue('Cnt', currentSearchCount);
-
-        let tt = document.getElementsByTagName("title")[0];
-        tt.innerHTML = "[" + currentSearchCount + " / " + max_rewards + "] " + tt.innerHTML;
-        smoothScrollToBottom();
-
-        setTimeout(function () {
-            if (GM_getValue('stopped', false)) return;
-            let nowtxt = search_words[currentSearchCount - 1];
-            nowtxt = AutoStrTrans(nowtxt);
-            log(`keys[${currentSearchCount - 1}]: ${nowtxt}`);
-            let searchUrl = currentSearchCount < max_rewards / 2
-                ? `https://www.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`
-                : `https://cn.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`;
-            if (currentSearchCount % 5 === 0) {
-                log(`pause_time: ${pause_time}`);
-                setTimeout(function () { if (!GM_getValue('stopped', false)) location.href = searchUrl; }, pause_time);
-            } else {
-                location.href = searchUrl;
-            }
-        }, randomDelay);
-    } else {
-        setScriptState('idle');
-    }
-
-    // 次日零点自动重置
-    const now = new Date();
-    const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
-    setTimeout(function () {
-        if (checkAndResetDaily()) {
-            douyinhot_dic().then(names => {
-                search_words = names;
-                exec();
-            }).catch(onError);
-        }
-    }, msUntilMidnight);
-
-    function smoothScrollToBottom() {
-        document.documentElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+function doStop() {
+    runToken++;
+    GM_setValue('stopped', true);
+    GM_setValue('Cnt', 0);
+    setScriptState('idle');
+    log('⏹ 已停止并重置计数');
 }
 
 var maxLogEntries = 50;
@@ -568,20 +496,91 @@ function onError() {
     var content = document.getElementById('bingLogContent');
     if (content && content.lastChild) content.lastChild.classList.add('error');
     console.error.apply(console, arguments);
-    if (window.setScriptState) window.setScriptState('error');
+    setScriptState('error');
+}
+
+// ================== 主执行 ==================
+async function exec() {
+    try {
+        if (GM_getValue('stopped', false)) {
+            log("检测到停止标志，脚本终止。");
+            setScriptState('paused');
+            return;
+        }
+        if (GM_getValue('Cnt') == null) GM_setValue('Cnt', 0);
+        let currentSearchCount = GM_getValue('Cnt');
+
+        if (currentSearchCount < max_rewards) {
+            setScriptState('running');
+
+            // 从缓存池取关键字（池空时自动补货），失败则不计数、直接报错
+            let nowtxt;
+            try {
+                nowtxt = await getNextKeyword();
+            } catch (err) {
+                onError('获取搜索词失败:', err);
+                setScriptState('error');
+                return;
+            }
+
+            currentSearchCount++;
+            GM_setValue('Cnt', currentSearchCount);
+
+            let randomDelay = Math.floor(Math.random() * 20000) + 10000;
+            let randomString = generateRandomString(4);
+            let randomCvid = generateRandomString(32);
+            const token = runToken; // 捕获当前令牌，暂停/停止后旧定时器失效
+
+            // 计算倒计时目标时间
+            const isPauseSearch = currentSearchCount % 5 === 0;
+            const totalDelay = randomDelay + (isPauseSearch ? pause_time : 0);
+            countdownTarget = Date.now() + totalDelay;
+
+            let tt = document.getElementsByTagName("title")[0];
+            tt.innerHTML = "[" + currentSearchCount + " / " + max_rewards + "] " + tt.innerHTML;
+            smoothScrollToBottom();
+
+            setTimeout(function () {
+                if (runToken !== token) return;
+                if (GM_getValue('stopped', false)) return;
+                log(`keys[${currentSearchCount - 1}]: ${nowtxt}`);
+                let searchUrl = currentSearchCount < max_rewards / 2
+                    ? `https://www.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`
+                    : `https://cn.bing.com/search?q=${encodeURI(nowtxt)}&form=${randomString}&cvid=${randomCvid}`;
+                if (currentSearchCount % 5 === 0) {
+                    log(`pause_time: ${pause_time}`);
+                    setTimeout(function () {
+                        if (runToken !== token) return;
+                        if (!GM_getValue('stopped', false)) location.href = searchUrl;
+                    }, pause_time);
+                } else {
+                    location.href = searchUrl;
+                }
+            }, randomDelay);
+        } else {
+            setScriptState('idle');
+        }
+
+        // 次日零点自动重置
+        const now = new Date();
+        const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+        setTimeout(function () {
+            if (checkAndResetDaily()) {
+                log('新的一天，重新开始');
+                exec();
+            }
+        }, msUntilMidnight);
+    } catch (err) {
+        onError('执行出错:', err);
+    }
+}
+
+function smoothScrollToBottom() {
+    document.documentElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 // ================== 初始化 ==================
 (function init() {
-    const needReset = checkAndResetDaily();
-    if (search_words.length > 0 && !needReset) {
-        // 已有缓存关键词且当天已初始化过，直接执行
-        exec();
-    } else {
-        // 需要重新获取关键词
-        douyinhot_dic().then(names => {
-            search_words = names;
-            exec();
-        }).catch(onError);
-    }
+    checkAndResetDaily();
+    exec();
 })();
